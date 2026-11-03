@@ -23,3 +23,8 @@ One batch runs at a time, processing one image at a time. A damaged image is mar
 Выберите до 10 файлов JPEG, PNG или WebP: каждый до 5 МиБ и 16 миллионов пикселей. Укажите максимальную ширину и высоту от 1 до 4000 пикселей, формат и начните обработку. Изображение вписывается в размеры с сохранением пропорций. В архиве создаются новые имена; оригиналы не изменяются. При сохранении в JPEG прозрачность теряется. Качество JPEG можно задать от 1 до 100; PNG и WebP используют настройки библиотеки. После обработки показаны размеры файлов и изменение в процентах.
 
 Одновременно выполняется одна партия; файлы обрабатываются по одному. Повреждённый файл отмечается ошибкой, остальные продолжают обрабатываться. Файлы, очередь и ZIP хранятся в памяти приложения и удаляются при остановке или нажатии **Очистить очередь**. Изображения не отправляются во внешние сервисы. Сервер предназначен для локального использования. Обложка — иллюстрация, не скриншот.
+
+### Orientation / Ориентация
+EXIF orientation (including mirrored orientations) is applied once before resizing. Output is newly encoded without copying EXIF/GPS metadata. Damaged orientation metadata can fail that item; others continue. Upload admission is released if its handler is cancelled, and multipart reception is limited to 30 seconds.
+Ориентация EXIF, включая отражение, применяется перед изменением размеров. Метаданные EXIF/GPS не копируются в результат. Ошибка одного файла не останавливает остальные. Приём партии ограничен 30 секундами.
+Run `cargo run --release -- --check` to check the local port without processing files. / Проверка локального порта без обработки: `--check`.
