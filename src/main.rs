@@ -36,20 +36,20 @@ struct Admission{app:App,transferred:bool}
 impl Drop for Admission{fn drop(&mut self){if !self.transferred{if let Ok(mut j)=self.app.lock(){j.running=false;}}}}
 async fn create(State(app):State<App>,headers:HeaderMap,mut multipart:Multipart)->Result<StatusCode,StatusCode>{
  if headers.get("x-forge-request").and_then(|x|x.to_str().ok())!=Some("1"){return Err(StatusCode::FORBIDDEN)}
- {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;if job.running{return Err(StatusCode::CONFLICT)}job.running=true;job.items.clear();job.archive=None;}
+ {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;if job.running{return Err(StatusCode::CONFLICT)}job.running=true;}
  let mut admission=Admission{app:app.clone(),transferred:false};
  let parsed=tokio::time::timeout(std::time::Duration::from_secs(30),async {
   let mut files:Vec<(String,Vec<u8>)>=Vec::new();let mut width=1200u32;let mut height=1200u32;let mut format=String::from("webp");let mut quality=85u8;
-  while let Some(field)=multipart.next_field().await.map_err(|_|StatusCode::BAD_REQUEST)? {
+  while let Some(mut field)=multipart.next_field().await.map_err(|_|StatusCode::BAD_REQUEST)? {
    let name=field.name().unwrap_or("").to_string();
-   if name=="files" {if files.len()>=10{return Err(StatusCode::PAYLOAD_TOO_LARGE)}let filename=field.file_name().unwrap_or("image").chars().take(100).collect::<String>();let bytes=field.bytes().await.map_err(|_|StatusCode::BAD_REQUEST)?;if bytes.len()>MAX_FILE{return Err(StatusCode::PAYLOAD_TOO_LARGE)}files.push((filename,bytes.to_vec()));}
-   else if ["width","height","format","quality"].contains(&name.as_str()){let value=field.text().await.map_err(|_|StatusCode::BAD_REQUEST)?;match name.as_str(){"width"=>width=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,"height"=>height=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,"format"=>format=value,"quality"=>quality=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,_=>{}}}
+   if name=="files" {if files.len()>=10{return Err(StatusCode::PAYLOAD_TOO_LARGE)}let filename=field.file_name().unwrap_or("image").chars().take(100).collect::<String>();let mut bytes=Vec::new();while let Some(chunk)=field.chunk().await.map_err(|_|StatusCode::BAD_REQUEST)?{if bytes.len().saturating_add(chunk.len())>MAX_FILE{return Err(StatusCode::PAYLOAD_TOO_LARGE)}bytes.extend_from_slice(&chunk);}files.push((filename,bytes));}
+   else if ["width","height","format","quality"].contains(&name.as_str()){let mut value_bytes=Vec::new();while let Some(chunk)=field.chunk().await.map_err(|_|StatusCode::BAD_REQUEST)?{if value_bytes.len().saturating_add(chunk.len())>64{return Err(StatusCode::PAYLOAD_TOO_LARGE)}value_bytes.extend_from_slice(&chunk);}let value=String::from_utf8(value_bytes).map_err(|_|StatusCode::BAD_REQUEST)?;match name.as_str(){"width"=>width=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,"height"=>height=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,"format"=>format=value,"quality"=>quality=value.parse().map_err(|_|StatusCode::BAD_REQUEST)?,_=>{}}}else{return Err(StatusCode::BAD_REQUEST)}
   }
   if files.is_empty()||!(1..=4000).contains(&width)||!(1..=4000).contains(&height)||!(1..=100).contains(&quality)||!matches!(format.as_str(),"jpg"|"png"|"webp"){return Err(StatusCode::BAD_REQUEST)}
   Ok((files,width,height,format,quality))
  }).await.unwrap_or(Err(StatusCode::REQUEST_TIMEOUT));
  let (files,width,height,fmt,quality)=match parsed{Ok(v)=>v,Err(e)=>{if let Ok(mut job)=app.lock(){job.running=false}return Err(e)}};
- {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;job.items=files.iter().map(|(name,bytes)|Item{name:name.clone(),status:"queued".into(),error:None,input_bytes:bytes.len(),output_bytes:None}).collect();}
+ {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;job.archive=None;job.items=files.iter().map(|(name,bytes)|Item{name:name.clone(),status:"queued".into(),error:None,input_bytes:bytes.len(),output_bytes:None}).collect();}
  admission.transferred=true;
  let app2=app.clone();tokio::spawn(async move {
   let format=match fmt.as_str(){"jpg"=>ImageFormat::Jpeg,"png"=>ImageFormat::Png,_=>ImageFormat::WebP};

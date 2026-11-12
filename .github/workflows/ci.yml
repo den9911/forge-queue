@@ -22,3 +22,7 @@ jobs:
       - name: End-to-end HTTP smoke test
         if: matrix.os == 'ubuntu-latest'
         run: python3 tests/smoke.py
+
+      - name: Real multipart admission recovery
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 tests/upload_recovery.py
