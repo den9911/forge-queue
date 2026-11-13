@@ -37,3 +37,8 @@ The existing Admission guard releases a failed/cancelled receive. New real TCP t
 A browser submission locks a second start until the user reviews/downloads the queue and explicitly clears it. The lock persists in sessionStorage when available; it does not imply durable server receipts. API POST after a completed job is a new replacement command, not an idempotent replay. Never automatically retry an unknown upload; inspect GET /api/job first. Restart still loses all in-memory jobs. No disk persistence or hardware power-loss guarantee was added.
 
 При ошибке приёма предыдущий ZIP сохраняется. Повторное нажатие запуска заблокировано до явной очистки; сначала проверьте очередь и скачайте доступный результат. Новый API POST после завершения означает новую партию, не глобальную дедупликацию.
+
+
+### Extended recovery acceptance — 14 November
+
+Real TCP CI checks now repeat 32 aborted replacements, verify bounded open file descriptors on Linux and compare the prior ZIP byte-for-byte. Killing the process during reception leaves an honestly empty in-memory queue on restart, then a new batch succeeds. GET /api/job exposes only a fixed last receive_error code (timeout/limit/invalid/interrupted), cleared on new admission or explicit Clear. EN/RU UI explains recovery without copying incoming multipart names into diagnostics. This is bounded last-state metadata, not an expanding event log. No persistence, heap/load benchmark, worker cancellation or hardware power-loss durability is promised.

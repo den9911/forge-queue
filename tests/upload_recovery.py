@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory() as directory:
             s.close();j=wait(lambda j:not j['running']);assert j['items']==[] and not j['ready']
         print('PASS actual disconnect before first field and inside file; concurrent admission rejected')
         s=partial(prefix()+png[:12]);wait(lambda j:not j['running'],36);s.close()
-        assert state()['items']==[];print('PASS real 30-second multipart timeout releases admission')
+        assert state()['items']==[] and state()['receive_error']=='receive_timeout';print('PASS real 30-second multipart timeout releases admission')
         assert request('POST',body=batch())[0]==202
         j=wait(lambda j:not j['running']);assert [x['status'] for x in j['items']]==['completed'],j
         status,archive=request(path='/api/download');assert status==200
@@ -46,7 +46,18 @@ with tempfile.TemporaryDirectory() as directory:
             assert z.namelist()==['image-001.webp'];assert z.read(z.namelist()[0])[:4]==b'RIFF'
         # An interrupted replacement preserves the previous successful result.
         s=partial(prefix('replacement.png')+png[:10]);s.close();j=wait(lambda j:not j['running']);assert j['ready'] and j['items'][0]['name']=='good.png';assert request(path='/api/download')[1]==archive
+        fdpath=pathlib.Path(f'/proc/{p.pid}/fd')
+        before=len(list(fdpath.iterdir())) if fdpath.exists() else None
+        for _ in range(32):
+            s=partial(prefix('aborted-private-name.png')+png[:10]);s.close()
+            j=wait(lambda j:not j['running'])
+            assert j['ready'] and j['receive_error'] in ['receive_invalid','receive_interrupted']
+            assert 'aborted-private-name' not in json.dumps(j)
+        if before is not None:assert len(list(fdpath.iterdir()))<=before+5
+        assert request(path='/api/download')[1]==archive
+        print('PASS 32 real disconnects, bounded file descriptors, fixed failure codes and preserved ZIP')
         assert request('POST',body=batch(b'x'*(5*1024*1024+1)))[0]==413
+        assert state()['receive_error']=='receive_limit'
         assert request(path='/api/download')[1]==archive
         oversized=f'--{boundary}\r\nContent-Disposition: form-data; name="width"\r\n\r\n'.encode()+b'1'*65+f'\r\n--{boundary}--\r\n'.encode()
         assert request('POST',body=oversized)[0]==413
@@ -54,4 +65,13 @@ with tempfile.TemporaryDirectory() as directory:
         assert request('POST',body=batch(name='next.png'))[0]==202
         j=wait(lambda j:not j['running']);assert len(j['items'])==1 and j['items'][0]['name']=='next.png'
         print('PASS bounded fields/files, prior ZIP preservation and independent next batch')
+        s=partial(prefix('interrupted-restart.png')+png[:10]);p.kill();p.wait(timeout=5);s.close()
+        p=subprocess.Popen([str(binary)],cwd=directory,stdout=subprocess.DEVNULL)
+        for _ in range(100):
+            try:state();break
+            except OSError:time.sleep(.1)
+        j=state();assert not j['running'] and not j['ready'] and j['items']==[] and j['receive_error'] is None
+        assert request('POST',body=batch(name='after-restart.png'))[0]==202
+        j=wait(lambda j:not j['running']);assert j['items'][0]['name']=='after-restart.png'
+        print('PASS process kill during multipart, honest empty restart and successful next batch')
     finally:p.terminate();p.wait(timeout=5)

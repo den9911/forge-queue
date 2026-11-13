@@ -11,9 +11,9 @@ const MAX_PIXELS:u64=16_000_000;
 #[derive(Clone,Serialize)]
 struct Item {name:String,status:String,error:Option<String>,input_bytes:usize,output_bytes:Option<usize>}
 #[derive(Clone,Serialize)]
-struct View {running:bool,items:Vec<Item>,ready:bool}
+struct View {running:bool,items:Vec<Item>,ready:bool,receive_error:Option<&'static str>}
 #[derive(Default)]
-struct Job {running:bool,items:Vec<Item>,archive:Option<Vec<u8>>}
+struct Job {running:bool,items:Vec<Item>,archive:Option<Vec<u8>>,receive_error:Option<&'static str>}
 type App=Arc<Mutex<Job>>;
 fn change(app:&App,i:usize,status:&str,error:Option<String>){if let Ok(mut job)=app.lock(){if let Some(item)=job.items.get_mut(i){item.status=status.into();item.error=error;}}}
 fn process(bytes:&[u8],w:u32,h:u32,format:ImageFormat,quality:u8)->Result<Vec<u8>>{
@@ -33,10 +33,10 @@ fn process(bytes:&[u8],w:u32,h:u32,format:ImageFormat,quality:u8)->Result<Vec<u8
  Ok(out.into_inner())
 }
 struct Admission{app:App,transferred:bool}
-impl Drop for Admission{fn drop(&mut self){if !self.transferred{if let Ok(mut j)=self.app.lock(){j.running=false;}}}}
+impl Drop for Admission{fn drop(&mut self){if !self.transferred{if let Ok(mut j)=self.app.lock(){j.running=false;if j.receive_error.is_none(){j.receive_error=Some("receive_interrupted");}}}}}
 async fn create(State(app):State<App>,headers:HeaderMap,mut multipart:Multipart)->Result<StatusCode,StatusCode>{
  if headers.get("x-forge-request").and_then(|x|x.to_str().ok())!=Some("1"){return Err(StatusCode::FORBIDDEN)}
- {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;if job.running{return Err(StatusCode::CONFLICT)}job.running=true;}
+ {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;if job.running{return Err(StatusCode::CONFLICT)}job.running=true;job.receive_error=None;}
  let mut admission=Admission{app:app.clone(),transferred:false};
  let parsed=tokio::time::timeout(std::time::Duration::from_secs(30),async {
   let mut files:Vec<(String,Vec<u8>)>=Vec::new();let mut width=1200u32;let mut height=1200u32;let mut format=String::from("webp");let mut quality=85u8;
@@ -48,7 +48,7 @@ async fn create(State(app):State<App>,headers:HeaderMap,mut multipart:Multipart)
   if files.is_empty()||!(1..=4000).contains(&width)||!(1..=4000).contains(&height)||!(1..=100).contains(&quality)||!matches!(format.as_str(),"jpg"|"png"|"webp"){return Err(StatusCode::BAD_REQUEST)}
   Ok((files,width,height,format,quality))
  }).await.unwrap_or(Err(StatusCode::REQUEST_TIMEOUT));
- let (files,width,height,fmt,quality)=match parsed{Ok(v)=>v,Err(e)=>{if let Ok(mut job)=app.lock(){job.running=false}return Err(e)}};
+ let (files,width,height,fmt,quality)=match parsed{Ok(v)=>v,Err(e)=>{if let Ok(mut job)=app.lock(){job.running=false;job.receive_error=Some(match e{StatusCode::REQUEST_TIMEOUT=>"receive_timeout",StatusCode::PAYLOAD_TOO_LARGE=>"receive_limit",_=>"receive_invalid"});}return Err(e)}};
  {let mut job=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;job.archive=None;job.items=files.iter().map(|(name,bytes)|Item{name:name.clone(),status:"queued".into(),error:None,input_bytes:bytes.len(),output_bytes:None}).collect();}
  admission.transferred=true;
  let app2=app.clone();tokio::spawn(async move {
@@ -66,7 +66,7 @@ async fn create(State(app):State<App>,headers:HeaderMap,mut multipart:Multipart)
  });
  Ok(StatusCode::ACCEPTED)
 }
-async fn state(State(app):State<App>)->Result<Json<View>,StatusCode>{let j=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;Ok(Json(View{running:j.running,items:j.items.clone(),ready:j.archive.is_some()}))}
+async fn state(State(app):State<App>)->Result<Json<View>,StatusCode>{let j=app.lock().map_err(|_|StatusCode::INTERNAL_SERVER_ERROR)?;Ok(Json(View{running:j.running,items:j.items.clone(),ready:j.archive.is_some(),receive_error:j.receive_error}))}
 async fn download(State(app):State<App>)->Response{let data=app.lock().ok().and_then(|j|j.archive.clone());match data{Some(bytes)=>([(header::CONTENT_TYPE,"application/zip"),(header::CONTENT_DISPOSITION,"attachment; filename=forge-results.zip")],bytes).into_response(),None=>StatusCode::NOT_FOUND.into_response()}}
 async fn clear(State(app):State<App>,headers:HeaderMap)->StatusCode{if headers.get("x-forge-request").and_then(|v|v.to_str().ok())!=Some("1"){return StatusCode::FORBIDDEN}match app.lock(){Ok(mut j)=>{if j.running{StatusCode::CONFLICT}else{*j=Job::default();StatusCode::NO_CONTENT}},Err(_)=>StatusCode::INTERNAL_SERVER_ERROR}}
 async fn index()->Html<&'static str>{Html(include_str!("../web/index.html"))}
